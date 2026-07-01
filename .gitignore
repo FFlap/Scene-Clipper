@@ -1,0 +1,14 @@
+.venv/
+.DS_Store
+__pycache__/
+.pytest_cache/
+*.pyc
+.playwright-cli/
+
+# Generated scene catalogs, thumbnails, logs, and exports.
+data/
+output/
+
+# Local model/cache directories if created inside the repo.
+models/
+.cache/

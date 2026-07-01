@@ -1,0 +1,7 @@
+Flask>=3.0
+numpy>=1.26
+Pillow>=10
+scenedetect[opencv]>=0.6.5
+torch>=2.2
+transformers>=4.47
+pytest>=8

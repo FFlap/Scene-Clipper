@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Scene Clipper</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/review.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="sb-full">
+      <div class="sb-top">
+        <div class="sb-row">
+          <div class="sb-title"><span class="sb-logo">▣</span><span>Scene Clipper</span></div>
+          <button class="icon-btn subtle" id="collapseBtn" title="Collapse sidebar" aria-label="Collapse sidebar"><svg viewBox="0 0 24 24"><path d="M4 5.5h16v13H4z"/><path d="M9 5.5v13"/><path d="m15 9-3 3 3 3"/></svg></button>
+        </div>
+        <button class="back-btn" id="backToLibraries"><svg viewBox="0 0 24 24"><path d="M5 7.5h11a3 3 0 0 1 3 3v6H8a3 3 0 0 1-3-3z"/><path d="M7 4.5h9a3 3 0 0 1 3 3v6"/><path d="m10 11-3 3 3 3"/></svg><span>Library</span></button>
+        <input id="nativeFolder" type="file" webkitdirectory directory multiple hidden>
+      </div>
+      <div id="sbBody">
+        <p class="sb-label">Episodes</p>
+        <nav id="navigator"></nav>
+      </div>
+    </div>
+    <div class="sb-rail">
+      <button class="rail-btn" id="expandRailBtn" title="Expand sidebar" aria-label="Expand sidebar"><svg viewBox="0 0 24 24"><path d="M4 5.5h16v13H4z"/><path d="M9 5.5v13"/><path d="m12 9 3 3-3 3"/></svg></button>
+      <button class="rail-btn accent" id="libraryRailBtn" title="Library" aria-label="Library"><svg viewBox="0 0 24 24"><path d="M5 7.5h11a3 3 0 0 1 3 3v6H8a3 3 0 0 1-3-3z"/><path d="M7 4.5h9a3 3 0 0 1 3 3v6"/></svg></button>
+      <div class="rail-spacer"></div>
+    </div>
+  </aside>
+  <main id="main">
+    <section id="libraryScreen">
+      <div class="library-hero">
+        <h1>Select a processed library</h1>
+        <p>Choose a prepared episode folder, or process a new folder into a review library.</p>
+      </div>
+      <div class="library-panel">
+        <button class="process-primary" id="processFromLibrary">Process Episodes</button>
+        <div id="libraryGrid"></div>
+      </div>
+    </section>
+    <header id="topbar">
+      <div>
+        <h1 id="pageTitle">Select a library</h1>
+      </div>
+      <div class="actions">
+        <label class="similarity">Similarity <output id="similarity-value">20</output><input id="similarity" type="range" min="0" max="100" value="20"></label>
+        <span id="count">0 selected</span>
+        <label class="check"><input id="galleryOnly" type="checkbox"> Generate Gallery Only</label>
+        <button id="export">Export selection</button>
+      </div>
+    </header>
+    <section id="episodes"><p class="empty">No library loaded.</p></section>
+  </main>
+</div>
+<div class="modal-backdrop" id="processModal" aria-hidden="true">
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="processTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="processTitle">Create a review library</h2>
+      </div>
+      <button class="icon-btn subtle" id="closeProcessModal" title="Close">×</button>
+    </div>
+    <p class="modal-note">Select a folder containing episodes. The app will recursively find video files and build a separate review library from them.</p>
+    <label class="field-label" for="libraryName">Library name</label>
+    <input id="libraryName" placeholder="Optional, defaults to folder name">
+    <label class="field-label" for="folderPath">Episode folder</label>
+    <div class="folder-row">
+      <input id="folderPath" class="path-input" placeholder="/Users/flappy/Downloads/show-folder">
+      <button class="small-btn" id="chooseFolderBtn">Select Folder</button>
+    </div>
+    <div class="modal-actions">
+      <label class="check-row"><input id="rebuild" type="checkbox"> Rebuild existing library</label>
+      <button class="primary-btn compact" id="preprocessBtn">Process Episodes</button>
+    </div>
+  </section>
+</div>
+<div id="status"></div>
+<script>
+let catalog=[],libraries=[],selected=new Set(),activeLibrary=null;
+const fmt=s=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+const statusEl=()=>document.querySelector('#status');
+function setStatus(text){statusEl().textContent=text||'';}
+function update(){document.querySelector('#count').textContent=`${selected.size} selected`;}
+function showLibraryScreen(){
+  document.body.classList.add('library-mode');
+  activeLibrary=null;catalog=[];selected.clear();update();render();
+}
+function showReviewScreen(){
+  document.body.classList.remove('library-mode');
+}
+function renderLibraries(){
+  const root=document.querySelector('#libraryGrid');
+  root.innerHTML=libraries.length?libraries.map(lib=>`<button class="library-card ${lib.id===activeLibrary?'active':''}" data-id="${lib.id}"><span class="library-main"><strong>${lib.name}</strong><small>${lib.episode_count} episodes</small></span><span class="library-open">Open →</span></button>`).join(''):'<p class="empty">No processed libraries yet. Click Process Episodes to create one.</p>';
+  root.querySelectorAll('.library-card').forEach(btn=>btn.onclick=()=>{activeLibrary=btn.dataset.id;selected.clear();update();showReviewScreen();loadCatalog();renderLibraries();});
+}
+function render(){
+  const nav=document.querySelector('#navigator'),root=document.querySelector('#episodes');
+  const active=libraries.find(x=>x.id===activeLibrary);
+  document.querySelector('#pageTitle').textContent=active?active.name:'Select a library';
+  nav.innerHTML=catalog.map((ep,i)=>`<a data-section="episode-${i}" href="#episode-${i}"><span>${String(i+1).padStart(2,'0')}</span>${ep.episode}<small>${ep.scenes.length}</small></a>`).join('');
+  root.innerHTML=catalog.length?catalog.map((ep,i)=>`<section class="episode" id="episode-${i}"><div class="episode-head"><span class="episode-number">${String(i+1).padStart(2,'0')}</span><div><h2>${ep.episode}</h2><p>${ep.scenes.length} representatives</p></div></div><div class="grid">${ep.scenes.map(s=>`<button class="card ${selected.has(s.id)?'selected':''}" data-id="${s.id}"><img loading="lazy" decoding="async" src="/thumbnail/${encodeURIComponent(s.id)}"><span>${fmt(s.start)}–${fmt(s.end)} · ${(s.end-s.start).toFixed(1)}s</span><small>${s.similar_scene_count} similar shot${s.similar_scene_count===1?'':'s'}</small></button>`).join('')}</div></section>`).join(''):'<p class="empty">Select a library first.</p>';
+  root.querySelectorAll('.card').forEach(card=>card.onclick=()=>{let id=card.dataset.id;selected.has(id)?selected.delete(id):selected.add(id);card.classList.toggle('selected');update();});
+  installSectionHighlight();
+}
+async function loadLibraries(){
+  libraries=await fetch('/api/libraries').then(r=>r.json());
+  renderLibraries();
+}
+async function loadCatalog(value=document.querySelector('#similarity').value){
+  if(!activeLibrary){catalog=[];render();return;}
+  setStatus('Regrouping…');
+  const params=new URLSearchParams({similarity:value,library:activeLibrary});
+  catalog=await fetch(`/api/catalog?${params}`).then(r=>r.json());
+  render();setStatus('');
+}
+showLibraryScreen();loadLibraries();
+let timer;document.querySelector('#similarity').oninput=e=>{document.querySelector('#similarity-value').textContent=e.target.value;clearTimeout(timer);timer=setTimeout(()=>loadCatalog(e.target.value),250)};
+document.querySelector('#export').onclick=async()=>{setStatus('Exporting…');let r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected:[...selected],generate_mp4:!document.querySelector('#galleryOnly').checked})});let d=await r.json();setStatus(r.ok?`Exported ${d.count} scenes to ${d.output}`:d.error);};
+function openProcessModal(){document.querySelector('#processModal').classList.add('open');document.querySelector('#processModal').setAttribute('aria-hidden','false');document.querySelector('#folderPath').focus();}
+function closeProcessModal(){document.querySelector('#processModal').classList.remove('open');document.querySelector('#processModal').setAttribute('aria-hidden','true');}
+async function chooseFolder(){
+  setStatus('Opening folder picker…');
+  const r=await fetch('/api/choose-folder',{method:'POST'});
+  const d=await r.json();
+  if(r.ok){document.querySelector('#folderPath').value=d.path;if(!document.querySelector('#libraryName').value.trim()){document.querySelector('#libraryName').value=d.path.split('/').filter(Boolean).pop()||'';}setStatus('Folder selected. Click Process Episodes to start.');return;}
+  setStatus(`${d.error || 'Folder picker unavailable'}; paste the absolute path manually.`);
+  document.querySelector('#nativeFolder').click();
+}
+document.querySelector('#processFromLibrary').onclick=openProcessModal;
+document.querySelector('#chooseFolderBtn').onclick=chooseFolder;
+document.querySelector('#closeProcessModal').onclick=closeProcessModal;
+document.querySelector('#processModal').onclick=e=>{if(e.target.id==='processModal')closeProcessModal();};
+document.querySelector('#libraryRailBtn').onclick=()=>{document.querySelector('#app').classList.remove('collapsed');showLibraryScreen();};
+document.querySelector('#nativeFolder').onchange=e=>{const files=[...e.target.files];if(files[0]?.webkitRelativePath){document.querySelector('#folderPath').placeholder=`Selected: ${files[0].webkitRelativePath.split('/')[0]} — paste absolute path to preprocess`;setStatus('Browser selected the folder name; paste its absolute path so Flask can read it.');}};
+document.querySelector('#preprocessBtn').onclick=async()=>{
+  const path=document.querySelector('#folderPath').value.trim();
+  if(!path){setStatus('Paste an absolute folder path first.');return;}
+  setStatus('Starting preprocessing…');
+  const r=await fetch('/api/preprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,name:document.querySelector('#libraryName').value.trim(),rebuild:document.querySelector('#rebuild').checked})});
+  const d=await r.json();if(r.ok)closeProcessModal();setStatus(r.ok?`Preprocessing started: ${d.source}`:d.error);
+};
+setInterval(async()=>{
+  const jobs=await fetch('/api/preprocess/status').then(r=>r.json()).catch(()=>[]);
+  const running=jobs.find(j=>j.status==='running'||j.status==='queued');
+  if(running) setStatus(`${running.status}: ${running.message}`);
+  const done=jobs.find(j=>j.status==='done'&&!libraries.some(l=>l.id===j.library_id));
+  if(done){await loadLibraries();}
+},3000);
+document.querySelector('#collapseBtn').onclick=()=>document.querySelector('#app').classList.add('collapsed');
+document.querySelector('#expandRailBtn').onclick=()=>document.querySelector('#app').classList.remove('collapsed');
+document.querySelector('#backToLibraries').onclick=showLibraryScreen;
+function installSectionHighlight(){
+  const root=document.querySelector('#episodes'),links=[...document.querySelectorAll('#navigator a')];
+  const sections=[...document.querySelectorAll('.episode')];
+  if(!sections.length)return;
+  function mark(){
+    let current=sections[0].id;
+    const top=root.getBoundingClientRect().top+80;
+    for(const section of sections){if(section.getBoundingClientRect().top<=top)current=section.id;}
+    links.forEach(link=>link.classList.toggle('active',link.dataset.section===current));
+  }
+  root.onscroll=mark; mark();
+}
+</script>
+</body>
+</html>
