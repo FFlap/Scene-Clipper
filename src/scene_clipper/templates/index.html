@@ -17,6 +17,7 @@
           <button class="icon-btn subtle" id="collapseBtn" title="Collapse sidebar" aria-label="Collapse sidebar"><svg viewBox="0 0 24 24"><path d="M4 5.5h16v13H4z"/><path d="M9 5.5v13"/><path d="m15 9-3 3 3 3"/></svg></button>
         </div>
         <button class="back-btn" id="backToLibraries"><svg viewBox="0 0 24 24"><path d="M5 7.5h11a3 3 0 0 1 3 3v6H8a3 3 0 0 1-3-3z"/><path d="M7 4.5h9a3 3 0 0 1 3 3v6"/><path d="m10 11-3 3 3 3"/></svg><span>Library</span></button>
+        <button class="back-btn" id="openSearchModal" hidden><svg viewBox="0 0 24 24"><path d="M4 8v8"/><path d="M8 5v14"/><path d="M12 9v6"/><path d="M16 6v12"/><path d="M20 10v4"/></svg><span>Clip Audio</span></button>
         <input id="nativeFolder" type="file" webkitdirectory directory multiple hidden>
       </div>
       <div id="sbBody">
@@ -37,7 +38,7 @@
         <p>Choose a prepared episode folder, or process a new folder into a review library.</p>
       </div>
       <div class="library-panel">
-        <button class="process-primary" id="processFromLibrary">Process Episodes</button>
+        <div class="library-actions-row"><button class="process-primary" id="processFromLibrary">Process Episodes</button></div>
         <div id="libraryGrid"></div>
       </div>
     </section>
@@ -54,6 +55,13 @@
     </header>
     <section id="episodes"><p class="empty">No library loaded.</p></section>
   </main>
+</div>
+<div class="modal-backdrop" id="searchModal" aria-hidden="true">
+  <section class="modal search-modal" role="dialog" aria-modal="true" aria-labelledby="searchTitle">
+    <div class="modal-head"><div><h2 id="searchTitle">Clip Audio</h2><p class="modal-note tight" id="searchFolderLabel"></p></div><button class="icon-btn subtle" id="closeSearchModal" title="Close">×</button></div>
+    <div class="search-row"><input id="searchQuery" placeholder="Search a spoken phrase"><select id="searchLanguage"><option value="">All subtitle languages</option></select><button class="primary-btn compact" id="searchBtn">Search</button></div>
+    <div id="searchResults"><p class="empty">Search subtitles in this folder to find and clip a spoken moment.</p></div>
+  </section>
 </div>
 <div class="modal-backdrop" id="processModal" aria-hidden="true">
   <section class="modal" role="dialog" aria-modal="true" aria-labelledby="processTitle">
@@ -77,6 +85,45 @@
     </div>
   </section>
 </div>
+<div class="modal-backdrop" id="clipModal" aria-hidden="true">
+  <section class="modal clip-modal" role="dialog" aria-modal="true" aria-labelledby="clipTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="clipTitle">Clip</h2>
+        <p class="modal-note tight" id="clipSubtitleInfo"></p>
+      </div>
+      <button class="icon-btn subtle" id="closeClipModal" title="Close">×</button>
+    </div>
+    <div class="player-wrap">
+      <video id="clipVideo" playsinline controls preload="auto"></video>
+      <div class="cue-overlay" id="cueOverlay"></div>
+    </div>
+    <div class="timeline" id="timeline">
+      <div class="tl-cues" id="tlCues"></div>
+      <div class="tl-range" id="tlRange"></div>
+      <div class="tl-handle in" id="tlIn" title="Clip start"></div>
+      <div class="tl-handle out" id="tlOut" title="Clip end"></div>
+      <div class="tl-playhead" id="tlPlayhead"></div>
+    </div>
+    <div class="tl-labels"><span id="tlWindowStart"></span><span class="tl-clip-label" id="tlClipLabel"></span><span id="tlWindowEnd"></span></div>
+    <div class="clip-controls">
+      <div class="clip-group">
+        <button class="small-btn" id="extendLeft" title="Load 10 more seconds before">−10s</button>
+        <button class="small-btn" id="extendRight" title="Load 10 more seconds after">+10s</button>
+      </div>
+      <div class="clip-group">
+        <button class="small-btn" id="resetRange">Reset range</button>
+        <button class="small-btn" id="loopRange" aria-pressed="false">Loop range</button>
+      </div>
+      <div class="clip-options">
+        <label>Audio <select id="audioTrack"><option value="">Default audio</option></select></label>
+        <label class="check-row"><input id="includeSubtitles" type="checkbox"> Include optional subtitle track</label>
+      </div>
+      <button class="primary-btn compact" id="exportClip">Export clip</button>
+    </div>
+    <div class="cue-list" id="cueList"></div>
+  </section>
+</div>
 <div id="status"></div>
 <script>
 let catalog=[],libraries=[],selected=new Set(),activeLibrary=null;
@@ -86,10 +133,13 @@ function setStatus(text){statusEl().textContent=text||'';}
 function update(){document.querySelector('#count').textContent=`${selected.size} selected`;}
 function showLibraryScreen(){
   document.body.classList.add('library-mode');
+  document.querySelector('#openSearchModal').hidden=true;
+  closeSearchModal();
   activeLibrary=null;catalog=[];selected.clear();update();render();
 }
 function showReviewScreen(){
   document.body.classList.remove('library-mode');
+  document.querySelector('#openSearchModal').hidden=!activeLibrary;
 }
 function renderLibraries(){
   const root=document.querySelector('#libraryGrid');
@@ -152,6 +202,167 @@ setInterval(async()=>{
 document.querySelector('#collapseBtn').onclick=()=>document.querySelector('#app').classList.add('collapsed');
 document.querySelector('#expandRailBtn').onclick=()=>document.querySelector('#app').classList.remove('collapsed');
 document.querySelector('#backToLibraries').onclick=showLibraryScreen;
+// ---------- Subtitle search + clipper ----------
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtT=s=>{s=Math.max(0,s);const m=Math.floor(s/60),sec=(s%60).toFixed(1).padStart(4,'0');return `${m}:${sec}`;};
+let lastResults=[];
+function openSearchModal(){
+  const library=libraries.find(item=>item.id===activeLibrary);
+  if(!library?.source){setStatus('This library has no source folder. Reprocess it to enable Clip Audio.');return;}
+  document.querySelector('#searchFolderLabel').textContent=library.source;
+  document.querySelector('#searchModal').classList.add('open');
+  document.querySelector('#searchModal').setAttribute('aria-hidden','false');
+  document.querySelector('#searchQuery').focus();
+}
+function closeSearchModal(){document.querySelector('#searchModal').classList.remove('open');document.querySelector('#searchModal').setAttribute('aria-hidden','true');}
+function highlight(text,query){
+  const safe=esc(text),q=esc(query);
+  const i=safe.toLowerCase().indexOf(q.toLowerCase());
+  return i<0?safe:`${safe.slice(0,i)}<mark>${safe.slice(i,i+q.length)}</mark>${safe.slice(i+q.length)}`;
+}
+async function runSearch(){
+  const folder=libraries.find(item=>item.id===activeLibrary)?.source||'';
+  const q=document.querySelector('#searchQuery').value.trim();
+  if(!folder){setStatus('The current library has no source folder.');return;}
+  if(q.length<2){setStatus('Enter at least 2 characters.');return;}
+  const root=document.querySelector('#searchResults');
+  root.innerHTML='<p class="empty">Searching… first search extracts subtitle tracks from each video.</p>';
+  const params=new URLSearchParams({folder,q});
+  const lang=document.querySelector('#searchLanguage').value;
+  if(lang)params.set('language',lang);
+  const r=await fetch(`/api/subtitles/search?${params}`);
+  const d=await r.json();
+  if(!r.ok){root.innerHTML=`<p class="empty">${esc(d.error)}</p>`;return;}
+  lastResults=d.results;
+  const sel=document.querySelector('#searchLanguage');
+  const current=sel.value;
+  sel.innerHTML='<option value="">All languages</option>'+d.languages.map(l=>`<option value="${esc(l)}" ${l===current?'selected':''}>${esc(l)}</option>`).join('');
+  const groups={};
+  d.results.forEach((res,i)=>{(groups[res.episode]=groups[res.episode]||[]).push([res,i]);});
+  root.innerHTML=Object.keys(groups).length?Object.entries(groups).map(([ep,items])=>`
+    <section class="result-episode"><h3>${esc(ep)}<small>${items.length} match${items.length===1?'':'es'}</small></h3>
+    ${items.map(([res,i])=>`<button class="result-row" data-index="${i}">
+      <span class="result-time">${fmtT(res.start)}</span>
+      <span class="result-body"><span class="result-context">${esc(res.before)}</span><span class="result-text">${highlight(res.text,q)}</span><span class="result-context">${esc(res.after)}</span></span>
+      <span class="result-lang">${esc(res.language)}</span>
+    </button>`).join('')}</section>`).join('')
+    +(d.truncated?'<p class="empty small">More matches exist — refine the phrase to narrow it down.</p>':'')
+    +(d.failures.length?`<p class="empty small">${d.failures.length} file(s) failed subtitle extraction.</p>`:'')
+    :'<p class="empty">No matches found.</p>';
+  root.querySelectorAll('.result-row').forEach(row=>row.onclick=()=>openClip(lastResults[+row.dataset.index]));
+  setStatus(`${d.results.length} matches across ${d.video_count} videos`);
+}
+document.querySelector('#openSearchModal').onclick=openSearchModal;
+document.querySelector('#closeSearchModal').onclick=closeSearchModal;
+document.querySelector('#searchModal').onclick=e=>{if(e.target.id==='searchModal')closeSearchModal();};
+document.querySelector('#searchBtn').onclick=runSearch;
+document.querySelector('#searchQuery').onkeydown=e=>{if(e.key==='Enter')runSearch();};
+
+// ---------- Clip modal ----------
+const clip={video:'',track:0,language:'',winStart:0,winEnd:0,in:0,out:0,originalIn:0,originalOut:0,looping:false,cues:[]};
+const videoEl=()=>document.querySelector('#clipVideo');
+const absTime=()=>clip.winStart+videoEl().currentTime;
+const pct=t=>`${Math.min(100,Math.max(0,(t-clip.winStart)/(clip.winEnd-clip.winStart)*100))}%`;
+async function openClip(res){
+  clip.video=res.video;clip.track=res.track;clip.language=res.language;
+  clip.in=res.start;clip.out=res.end;clip.originalIn=res.start;clip.originalOut=res.end;clip.looping=false;
+  clip.winStart=Math.max(0,res.start-10);clip.winEnd=res.end+10;
+  document.querySelector('#clipTitle').textContent=res.episode;
+  document.querySelector('#clipSubtitleInfo').textContent=`“${res.text}” · ${res.language} · ${fmtT(res.start)}–${fmtT(res.end)}`;
+  document.querySelector('#clipModal').classList.add('open');
+  document.querySelector('#clipModal').setAttribute('aria-hidden','false');
+  document.querySelector('#includeSubtitles').checked=false;
+  updateSubtitleVisibility();
+  document.querySelector('#loopRange').setAttribute('aria-pressed','false');
+  document.querySelector('#loopRange').classList.remove('active');
+  const tracks=await fetch(`/api/media/tracks?${new URLSearchParams({video:clip.video})}`).then(r=>r.json()).catch(()=>[]);
+  const audio=document.querySelector('#audioTrack');
+  audio.innerHTML=(Array.isArray(tracks)?tracks:[]).map(t=>`<option value="${t.track}">${esc(t.language.toUpperCase())}${t.title?` · ${esc(t.title)}`:''}</option>`).join('')||'<option value="">Default audio</option>';
+  const matching=[...audio.options].find(option=>option.textContent.toLowerCase().startsWith(res.language.toLowerCase()));
+  if(matching)audio.value=matching.value;
+  loadClipWindow(res.start);
+}
+function closeClip(){
+  videoEl().pause();videoEl().removeAttribute('src');videoEl().load();
+  document.querySelector('#clipModal').classList.remove('open');
+  document.querySelector('#clipModal').setAttribute('aria-hidden','true');
+}
+async function loadClipWindow(seekTo){
+  const v=videoEl();
+  const params=new URLSearchParams({video:clip.video,start:clip.winStart.toFixed(3),end:clip.winEnd.toFixed(3)});
+  const audioTrack=document.querySelector('#audioTrack').value;
+  if(audioTrack!=='')params.set('audio_track',audioTrack);
+  setStatus('Preparing preview…');
+  v.src=`/api/media/preview?${params}`;
+  v.onloadeddata=()=>{setStatus('');if(seekTo!=null)v.currentTime=Math.max(0,seekTo-clip.winStart);v.play().catch(()=>{});};
+  v.onerror=()=>setStatus('Preview failed — check the server log.');
+  clip.cues=await fetch(`/api/subtitles/cues?${new URLSearchParams({video:clip.video,track:clip.track,start:clip.winStart,end:clip.winEnd})}`).then(r=>r.json()).catch(()=>[]);
+  if(!Array.isArray(clip.cues))clip.cues=[];
+  renderCueList();renderTimeline();
+}
+function renderTimeline(){
+  document.querySelector('#tlCues').innerHTML=clip.cues.map(c=>`<i style="left:${pct(c.start)};width:${Math.max(0.5,(Math.min(c.end,clip.winEnd)-Math.max(c.start,clip.winStart))/(clip.winEnd-clip.winStart)*100)}%"></i>`).join('');
+  const range=document.querySelector('#tlRange');
+  range.style.left=pct(clip.in);range.style.width=`calc(${pct(clip.out)} - ${pct(clip.in)})`;
+  document.querySelector('#tlIn').style.left=pct(clip.in);
+  document.querySelector('#tlOut').style.left=pct(clip.out);
+  document.querySelector('#tlWindowStart').textContent=fmtT(clip.winStart);
+  document.querySelector('#tlWindowEnd').textContent=fmtT(clip.winEnd);
+  document.querySelector('#tlClipLabel').textContent=`clip ${fmtT(clip.in)} → ${fmtT(clip.out)} (${(clip.out-clip.in).toFixed(1)}s)`;
+}
+function renderCueList(){
+  const root=document.querySelector('#cueList');
+  root.innerHTML=clip.cues.map((c,i)=>`<button class="cue-row" data-i="${i}"><span>${fmtT(c.start)}</span>${esc(c.text)}</button>`).join('')||'<p class="empty small">No subtitles in this window.</p>';
+  root.querySelectorAll('.cue-row').forEach(row=>row.onclick=()=>{videoEl().currentTime=Math.max(0,clip.cues[+row.dataset.i].start-clip.winStart);videoEl().play().catch(()=>{});});
+}
+function updateSubtitleVisibility(){
+  const enabled=document.querySelector('#includeSubtitles').checked;
+  if(!enabled)document.querySelector('#cueOverlay').textContent='';
+}
+document.querySelector('#clipVideo').addEventListener('timeupdate',()=>{
+  const t=absTime();
+  document.querySelector('#tlPlayhead').style.left=pct(t);
+  const cue=clip.cues.find(c=>t>=c.start&&t<=c.end);
+  document.querySelector('#cueOverlay').textContent=cue&&document.querySelector('#includeSubtitles').checked?cue.text:'';
+  document.querySelectorAll('.cue-row').forEach((row,i)=>row.classList.toggle('active',clip.cues[i]===cue));
+  if(clip.looping&&t>=clip.out){videoEl().currentTime=Math.max(0,clip.in-clip.winStart);videoEl().play().catch(()=>{});}
+});
+function timelineTime(e){
+  const rect=document.querySelector('#timeline').getBoundingClientRect();
+  const ratio=Math.min(1,Math.max(0,(e.clientX-rect.left)/rect.width));
+  return clip.winStart+ratio*(clip.winEnd-clip.winStart);
+}
+document.querySelector('#timeline').addEventListener('pointerdown',e=>{
+  const handle=e.target.closest('.tl-handle');
+  if(handle){
+    handle.setPointerCapture(e.pointerId);
+    const key=handle.id==='tlIn'?'in':'out';
+    const move=ev=>{
+      const t=timelineTime(ev);
+      if(key==='in')clip.in=Math.min(t,clip.out-0.1);else clip.out=Math.max(t,clip.in+0.1);
+      renderTimeline();
+    };
+    const up=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',up);};
+    handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',up);
+  }else{
+    videoEl().currentTime=Math.max(0,timelineTime(e)-clip.winStart);
+  }
+});
+document.querySelector('#resetRange').onclick=()=>{clip.in=clip.originalIn;clip.out=clip.originalOut;videoEl().currentTime=Math.max(0,clip.in-clip.winStart);renderTimeline();};
+document.querySelector('#loopRange').onclick=e=>{clip.looping=!clip.looping;e.currentTarget.setAttribute('aria-pressed',String(clip.looping));e.currentTarget.classList.toggle('active',clip.looping);if(clip.looping&&(absTime()<clip.in||absTime()>=clip.out))videoEl().currentTime=Math.max(0,clip.in-clip.winStart);};
+document.querySelector('#includeSubtitles').onchange=updateSubtitleVisibility;
+document.querySelector('#extendLeft').onclick=()=>{clip.winStart=Math.max(0,clip.winStart-10);loadClipWindow(clip.in);};
+document.querySelector('#extendRight').onclick=()=>{clip.winEnd+=10;loadClipWindow(absTime());};
+document.querySelector('#audioTrack').onchange=()=>loadClipWindow(absTime());
+document.querySelector('#exportClip').onclick=async()=>{
+  setStatus('Exporting clip…');
+  const r=await fetch('/api/clip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video:clip.video,start:clip.in,end:clip.out,audio_track:document.querySelector('#audioTrack').value,subtitle_track:clip.track,include_subtitles:document.querySelector('#includeSubtitles').checked})});
+  const d=await r.json();
+  setStatus(r.ok?`Clip saved: ${d.output}`:d.error);
+};
+document.querySelector('#closeClipModal').onclick=closeClip;
+document.querySelector('#clipModal').onclick=e=>{if(e.target.id==='clipModal')closeClip();};
+
 function installSectionHighlight(){
   const root=document.querySelector('#episodes'),links=[...document.querySelectorAll('#navigator a')];
   const sections=[...document.querySelectorAll('.episode')];

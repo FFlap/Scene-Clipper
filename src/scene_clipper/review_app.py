@@ -10,8 +10,9 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-from .catalog import find_videos, load_catalog, preprocess_directory
-from .exporter import export_selection
+from .catalog import VIDEO_EXTENSIONS, find_videos, load_catalog, preprocess_directory
+from .exporter import export_selection, ffmpeg_clip_command
+from .subtitles import cues_in_range, search_folder
 
 
 def _slug(value: str) -> str:
@@ -44,12 +45,32 @@ def _write_meta(path: Path, source: Path, name: str | None = None) -> None:
     (path / "library.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def ffmpeg_preview_command(video, start, end, output, audio_track=None):
+    audio_map = "0:a?" if audio_track is None else f"0:a:{audio_track}"
+    return [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{end - start:.3f}",
+        "-map", "0:v:0", "-map", audio_map, "-sn",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-vf", "scale='min(854,iw)':-2", "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+        "-movflags", "+faststart", str(output),
+    ]
+
+
 def create_app(catalog_root: Path, export_root: Path, exporter=export_selection):
     app = Flask(__name__)
     catalog_root = Path(catalog_root)
     export_root = Path(export_root)
     jobs: dict[str, dict] = {}
     scene_cache = {"mtime": 0.0, "mapping": {}}
+    subtitle_cache = catalog_root / ".subtitle-cache"
+    preview_cache = catalog_root / ".preview-cache"
+
+    def _video_arg(value: str) -> Path:
+        video = Path(str(value or "").strip()).expanduser()
+        if not video.is_file() or video.suffix.lower() not in VIDEO_EXTENSIONS:
+            raise ValueError(f"Not a video file: {video}")
+        return video
 
     def _direct_catalogs(root: Path):
         return sorted(root.glob("*/catalog.json"))
@@ -213,5 +234,101 @@ def create_app(catalog_root: Path, export_root: Path, exporter=export_selection)
         except Exception as exc:
             return jsonify(error=str(exc)), 500
         return jsonify(output=str(out), count=len(scenes))
+
+    @app.get("/api/subtitles/search")
+    def subtitle_search():
+        folder = Path(str(request.args.get("folder", "")).strip()).expanduser()
+        query = str(request.args.get("q", "")).strip()
+        if not folder.is_dir():
+            return jsonify(error=f"Not a folder: {folder}"), 400
+        if len(query) < 2:
+            return jsonify(error="Enter at least 2 characters"), 400
+        language = request.args.get("language") or None
+        return jsonify(search_folder(folder, query, subtitle_cache, language))
+
+    @app.get("/api/subtitles/cues")
+    def subtitle_cues():
+        try:
+            video = _video_arg(request.args.get("video"))
+            track = int(request.args.get("track", 0))
+            start = float(request.args.get("start", 0))
+            end = float(request.args.get("end", 0))
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify(cues_in_range(video, track, start, end, subtitle_cache))
+
+    @app.get("/api/media/preview")
+    def media_preview():
+        try:
+            video = _video_arg(request.args.get("video"))
+            start = max(0.0, float(request.args.get("start", 0)))
+            end = float(request.args.get("end", 0))
+            audio_value = request.args.get("audio_track")
+            audio_track = None if audio_value in (None, "") else int(audio_value)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        if not (0 < end - start <= 300):
+            return jsonify(error="Preview range must be between 0 and 300 seconds"), 400
+        key = hashlib.sha1(f"{video.resolve()}:{video.stat().st_mtime}:{start:.3f}:{end:.3f}:{audio_track}".encode("utf-8")).hexdigest()[:16]
+        out = preview_cache / f"{key}.mp4"
+        if not out.exists():
+            preview_cache.mkdir(parents=True, exist_ok=True)
+            partial = out.with_suffix(".partial.mp4")
+            try:
+                subprocess.run(
+                    ffmpeg_preview_command(video, start, end, partial, audio_track),
+                    check=True, capture_output=True, text=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                return jsonify(error=(exc.stderr or "ffmpeg failed").strip()[-500:]), 500
+            partial.rename(out)
+        return send_file(out, mimetype="video/mp4", max_age=86400, conditional=True)
+
+    @app.get("/api/media/tracks")
+    def media_tracks():
+        try:
+            video = _video_arg(request.args.get("video"))
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a",
+                 "-show_entries", "stream=index:stream_tags=language,title",
+                 "-of", "json", str(video)],
+                check=True, capture_output=True, text=True,
+            )
+        except (ValueError, subprocess.CalledProcessError) as exc:
+            return jsonify(error=str(exc)), 400
+        tracks = []
+        for order, stream in enumerate(json.loads(result.stdout or "{}").get("streams", [])):
+            tags = stream.get("tags", {})
+            tracks.append({"track": order, "stream_index": stream.get("index"),
+                           "language": tags.get("language", "und"), "title": tags.get("title", "")})
+        return jsonify(tracks)
+
+    @app.post("/api/clip")
+    def export_clip():
+        body = request.get_json() or {}
+        try:
+            video = _video_arg(body.get("video"))
+            start = max(0.0, float(body.get("start", 0)))
+            end = float(body.get("end", 0))
+        except (TypeError, ValueError) as exc:
+            return jsonify(error=str(exc)), 400
+        if end <= start:
+            return jsonify(error="Clip end must be after start"), 400
+        audio_track = body.get("audio_track")
+        subtitle_track = body.get("subtitle_track") if body.get("include_subtitles") else None
+        try:
+            audio_track = None if audio_track in (None, "") else int(audio_track)
+            subtitle_track = None if subtitle_track in (None, "") else int(subtitle_track)
+        except (TypeError, ValueError):
+            return jsonify(error="Invalid audio or subtitle track"), 400
+        clips_dir = export_root / "clips"
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        stem = re.sub(r"[^A-Za-z0-9._ -]+", "", video.stem)[:80] or "clip"
+        out = clips_dir / f"{stem} [{start:.1f}s-{end:.1f}s].mp4"
+        try:
+            subprocess.run(ffmpeg_clip_command(video, start, end, out, audio_track, subtitle_track), check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            return jsonify(error=(exc.stderr or "ffmpeg failed").strip()[-500:]), 500
+        return jsonify(output=str(out))
 
     return app

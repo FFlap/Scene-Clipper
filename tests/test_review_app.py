@@ -1,6 +1,7 @@
 import json
 import time
-from scene_clipper.review_app import create_app
+import subprocess
+from scene_clipper.review_app import create_app, ffmpeg_preview_command
 
 
 def test_catalog_and_export_routes(tmp_path):
@@ -65,3 +66,84 @@ def test_preprocess_reports_partial_failures(monkeypatch, tmp_path):
         time.sleep(0.01)
     assert status["status"] == "done_with_errors"
     assert status["failures"][0]["error"] == "broken"
+
+
+def test_media_tracks_reports_audio_languages(monkeypatch, tmp_path):
+    source = tmp_path / "episodes"
+    source.mkdir()
+    video = source / "E01.mkv"
+    video.write_bytes(b"video")
+    monkeypatch.setattr(
+        "scene_clipper.review_app.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, '{"streams":[{"index":1,"tags":{"language":"jpn","title":"Japanese"}},{"index":2,"tags":{"language":"eng"}}]}', ""),
+    )
+    client = create_app(tmp_path / "catalog", tmp_path / "exports").test_client()
+
+    response = client.get("/api/media/tracks", query_string={"video": str(video)})
+
+    assert response.status_code == 200
+    assert response.json == [
+        {"track": 0, "stream_index": 1, "language": "jpn", "title": "Japanese"},
+        {"track": 1, "stream_index": 2, "language": "eng", "title": ""},
+    ]
+
+
+def test_clip_passes_selected_tracks_to_ffmpeg(monkeypatch, tmp_path):
+    source = tmp_path / "episodes"
+    source.mkdir()
+    video = source / "E01.mkv"
+    video.write_bytes(b"video")
+    calls = []
+    monkeypatch.setattr("scene_clipper.review_app.subprocess.run", lambda cmd, **kwargs: calls.append(cmd))
+    client = create_app(tmp_path / "catalog", tmp_path / "exports").test_client()
+
+    response = client.post("/api/clip", json={
+        "video": str(video), "start": 1, "end": 3,
+        "audio_track": 1, "subtitle_track": 2, "include_subtitles": True,
+    })
+
+    assert response.status_code == 200
+    assert "0:a:1" in calls[0]
+    assert "0:s:2" in calls[0]
+
+
+def test_clip_audio_control_starts_hidden_outside_a_folder(tmp_path):
+    client = create_app(tmp_path / "catalog", tmp_path / "exports").test_client()
+
+    page = client.get("/").get_data(as_text=True)
+
+    assert 'id="openSearchModal" hidden' in page
+
+
+def test_preview_command_maps_selected_audio_track():
+    cmd = ffmpeg_preview_command("a.mkv", 2, 8, "preview.mp4", audio_track=1)
+
+    assert "0:a:1" in cmd
+
+
+def test_audio_selector_reloads_preview(tmp_path):
+    client = create_app(tmp_path / "catalog", tmp_path / "exports").test_client()
+
+    page = client.get("/").get_data(as_text=True)
+
+    assert "params.set('audio_track',audioTrack)" in page
+    assert "#audioTrack').onchange" in page
+
+
+def test_clip_editor_has_reset_and_loop_controls(tmp_path):
+    page = create_app(tmp_path / "catalog", tmp_path / "exports").test_client().get("/").get_data(as_text=True)
+
+    assert 'id="resetRange"' in page
+    assert 'id="loopRange"' in page
+    assert 'id="setIn"' not in page
+    assert 'id="setOut"' not in page
+    assert 'id="playRange"' not in page
+
+
+def test_subtitle_overlay_follows_include_toggle(tmp_path):
+    page = create_app(tmp_path / "catalog", tmp_path / "exports").test_client().get("/").get_data(as_text=True)
+
+    assert "includeSubtitles').checked?cue.text:''" in page
+    assert "includeSubtitles').onchange" in page
+    assert "querySelector('#cueList').hidden" not in page
+    assert "querySelector('#tlCues').hidden" not in page
