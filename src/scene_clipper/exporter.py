@@ -8,10 +8,12 @@ from PIL import Image,ImageDraw
 
 def ffmpeg_clip_command(video, start, end, output, audio_track=None, subtitle_track=None):
     audio_map = "0:a?" if audio_track is None else f"0:a:{audio_track}"
-    command = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-ss",str(start),"-to",str(end),"-map","0:v:0","-map",audio_map]
+    duration = max(0.0, float(end) - float(start))
+    duration_text = f"{duration:g}"
+    command = ["ffmpeg","-y","-hide_banner","-loglevel","error","-ss",str(start),"-i",str(video),"-t",duration_text,"-map","0:v:0","-map",audio_map]
     if subtitle_track is not None:
         command.extend(["-map", f"0:s:{subtitle_track}"])
-    command.extend(["-c:v","libx264","-crf","18","-preset","medium","-c:a","aac","-b:a","192k"])
+    command.extend(["-c:v","libx264","-crf","18","-preset","veryfast","-c:a","aac","-b:a","192k"])
     if subtitle_track is not None:
         command.extend(["-c:s", "mov_text"])
     command.append(str(output))
@@ -43,7 +45,7 @@ def export_selection(selected, root: Path, generate_clips: bool):
         draw.text((10,24),item["timestamp"],fill=(159,183,255))
         grid.paste(tile,(((index-1)%cols)*cw,((index-1)//cols)*ch))
         if generate_clips:
-            subprocess.run(ffmpeg_clip_command(item["video"],item["start"],item["end"],out/f"{index:03}-{item['episode']}.mp4"),check=True)
+            subprocess.run(ffmpeg_clip_command(item["video"], item["start"], item["end"], out/f"{index:03}-{item['episode']}.mp4"), check=True)
     grid.save(out/"selected-grid.jpg",quality=90)
     (out/"selection.json").write_text(json.dumps({"clips_generated":generate_clips,"scenes":records},indent=2)+"\n")
     return out
