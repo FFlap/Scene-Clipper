@@ -10,7 +10,7 @@ def ffmpeg_clip_command(video, start, end, output, audio_track=None, subtitle_tr
     audio_map = "0:a?" if audio_track is None else f"0:a:{audio_track}"
     duration = max(0.0, float(end) - float(start))
     duration_text = f"{duration:g}"
-    command = ["ffmpeg","-y","-hide_banner","-loglevel","error","-ss",str(start),"-i",str(video),"-t",duration_text,"-map","0:v:0","-map",audio_map]
+    command = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-ss",str(start),"-t",duration_text,"-map","0:v:0","-map",audio_map]
     if subtitle_track is not None:
         command.extend(["-map", f"0:s:{subtitle_track}"])
     command.extend(["-c:v","libx264","-crf","18","-preset","veryfast","-c:a","aac","-b:a","192k"])
@@ -18,6 +18,31 @@ def ffmpeg_clip_command(video, start, end, output, audio_track=None, subtitle_tr
         command.extend(["-c:s", "mov_text"])
     command.append(str(output))
     return command
+
+
+def audio_tracks(video):
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=index:stream_tags=language,title",
+         "-of", "json", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    tracks = []
+    for order, stream in enumerate(json.loads(result.stdout or "{}").get("streams", [])):
+        tags = stream.get("tags", {})
+        tracks.append({"track": order, "stream_index": stream.get("index"),
+                       "language": tags.get("language", "und"), "title": tags.get("title", "")})
+    return tracks
+
+
+def audio_track_for_language(video, language):
+    if not language:
+        return None
+    wanted = str(language).lower()
+    for track in audio_tracks(video):
+        if str(track.get("language", "")).lower() == wanted:
+            return track["track"]
+    return None
 
 
 def format_timestamp(seconds):
@@ -33,7 +58,7 @@ def selection_record(item):
     return {**item,"source_file":source,"timestamp":timestamp}
 
 
-def export_selection(selected, root: Path, generate_clips: bool):
+def export_selection(selected, root: Path, generate_clips: bool, audio_language: str | None = None):
     if not selected: raise ValueError("Select at least one scene")
     out=root/(datetime.now().strftime("%Y%m%d-%H%M%S-%f")); out.mkdir(parents=True)
     records=[selection_record(item) for item in selected]
@@ -45,7 +70,8 @@ def export_selection(selected, root: Path, generate_clips: bool):
         draw.text((10,24),item["timestamp"],fill=(159,183,255))
         grid.paste(tile,(((index-1)%cols)*cw,((index-1)//cols)*ch))
         if generate_clips:
-            subprocess.run(ffmpeg_clip_command(item["video"], item["start"], item["end"], out/f"{index:03}-{item['episode']}.mp4"), check=True)
+            audio_track = audio_track_for_language(item["video"], audio_language)
+            subprocess.run(ffmpeg_clip_command(item["video"], item["start"], item["end"], out/f"{index:03}-{item['episode']}.mp4", audio_track), check=True)
     grid.save(out/"selected-grid.jpg",quality=90)
     (out/"selection.json").write_text(json.dumps({"clips_generated":generate_clips,"scenes":records},indent=2)+"\n")
     return out

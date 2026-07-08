@@ -17,6 +17,39 @@ def test_catalog_and_export_routes(tmp_path):
     assert response.status_code==200 and calls[0][1] is True
 
 
+def test_export_passes_audio_language_when_selected(tmp_path):
+    catalog_dir=tmp_path/"catalog"/"E01"; catalog_dir.mkdir(parents=True)
+    scene={"id":"x","episode":"E01","video":"a.mkv","start":1,"end":5,"thumbnail":"x.jpg"}
+    (catalog_dir/"catalog.json").write_text(json.dumps({"episode":"E01","scenes":[scene]}))
+    calls=[]
+    def exporter(selected,root,clips,audio_language): calls.append((clips,audio_language)); out=root/"done"; out.mkdir(parents=True); return out
+    client=create_app(tmp_path/"catalog",tmp_path/"exports",exporter).test_client()
+
+    response=client.post("/api/export",json={"selected":["x"],"generate_mp4":True,"audio_language":"jpn"})
+
+    assert response.status_code==200
+    assert calls == [(True, "jpn")]
+
+
+def test_export_options_reports_selected_audio_languages(monkeypatch, tmp_path):
+    catalog_dir=tmp_path/"catalog"/"E01"; catalog_dir.mkdir(parents=True)
+    scene={"id":"x","episode":"E01","video":str(tmp_path/"a.mkv"),"start":1,"end":5,"thumbnail":"x.jpg"}
+    (catalog_dir/"catalog.json").write_text(json.dumps({"episode":"E01","scenes":[scene]}))
+    monkeypatch.setattr(
+        "scene_clipper.review_app.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, '{"streams":[{"index":1,"tags":{"language":"jpn","title":"Japanese"}},{"index":2,"tags":{"language":"eng"}}]}', ""),
+    )
+    client=create_app(tmp_path/"catalog",tmp_path/"exports").test_client()
+
+    response=client.post("/api/export/options",json={"selected":["x"]})
+
+    assert response.status_code == 200
+    assert response.json["languages"] == [
+        {"count": 1, "language": "eng", "titles": []},
+        {"count": 1, "language": "jpn", "titles": ["Japanese"]},
+    ]
+
+
 def test_export_uses_unique_scene_ids_across_libraries(tmp_path):
     root = tmp_path / "catalog"
     for library, video in [("A", "a.mkv"), ("B", "b.mkv")]:

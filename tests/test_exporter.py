@@ -40,3 +40,21 @@ def test_ffmpeg_command_omits_subtitles_when_disabled():
     cmd = ffmpeg_clip_command("a.mkv", 1, 5, "x.mp4", audio_track=0)
 
     assert not any(value.startswith("0:s:") for value in cmd)
+
+
+def test_export_selection_uses_requested_audio_language(monkeypatch, tmp_path):
+    thumb = tmp_path / "thumb.jpg"; Image.new("RGB", (100, 60), "red").save(thumb)
+    selected = [{"id":"x", "episode":"E01", "video":"/tmp/source.mkv", "start":1.0, "end":5.0, "thumbnail":str(thumb)}]
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "ffprobe":
+            return type("Result", (), {"stdout": '{"streams":[{"index":1,"tags":{"language":"jpn"}},{"index":2,"tags":{"language":"eng"}}]}'})()
+        calls.append(cmd)
+        return type("Result", (), {"stdout": ""})()
+
+    monkeypatch.setattr("scene_clipper.exporter.subprocess.run", fake_run)
+
+    export_selection(selected, tmp_path / "exports", True, "eng")
+
+    assert "0:a:1" in calls[0]

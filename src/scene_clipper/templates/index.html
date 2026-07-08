@@ -49,7 +49,6 @@
       <div class="actions">
         <label class="similarity">Similarity <output id="similarity-value">20</output><input id="similarity" type="range" min="0" max="100" value="20"></label>
         <span id="count">0 selected</span>
-        <label class="check"><input id="galleryOnly" type="checkbox"> Generate Gallery Only</label>
         <button id="export">Export selection</button>
       </div>
     </header>
@@ -82,6 +81,24 @@
     <div class="modal-actions">
       <label class="check-row"><input id="rebuild" type="checkbox"> Rebuild existing library</label>
       <button class="primary-btn compact" id="preprocessBtn">Process Episodes</button>
+    </div>
+  </section>
+</div>
+<div class="modal-backdrop" id="exportModal" aria-hidden="true">
+  <section class="modal export-modal" role="dialog" aria-modal="true" aria-labelledby="exportTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="exportTitle">Export selection</h2>
+        <p class="modal-note tight" id="exportSummary"></p>
+      </div>
+      <button class="icon-btn subtle" id="closeExportModal" title="Close">×</button>
+    </div>
+    <label class="field-label" for="exportAudioLanguage">Audio language</label>
+    <select id="exportAudioLanguage"><option value="">Default audio</option></select>
+    <p class="modal-note tight" id="exportAudioNote"></p>
+    <div class="modal-actions">
+      <label class="check-row"><input id="galleryOnly" type="checkbox"> Generate Gallery Only</label>
+      <button class="primary-btn compact" id="confirmExport">Export</button>
     </div>
   </section>
 </div>
@@ -168,7 +185,33 @@ async function loadCatalog(value=document.querySelector('#similarity').value){
 }
 showLibraryScreen();loadLibraries();
 let timer;document.querySelector('#similarity').oninput=e=>{document.querySelector('#similarity-value').textContent=e.target.value;clearTimeout(timer);timer=setTimeout(()=>loadCatalog(e.target.value),250)};
-document.querySelector('#export').onclick=async()=>{setStatus('Exporting…');let r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected:[...selected],generate_mp4:!document.querySelector('#galleryOnly').checked})});let d=await r.json();setStatus(r.ok?`Exported ${d.count} scenes to ${d.output}`:d.error);};
+async function openExportModal(){
+  if(!selected.size){setStatus('Select at least one scene');return;}
+  document.querySelector('#exportSummary').textContent=`${selected.size} selected scene${selected.size===1?'':'s'}`;
+  document.querySelector('#exportAudioLanguage').innerHTML='<option value="">Default audio</option>';
+  document.querySelector('#exportAudioNote').textContent='Loading audio languages…';
+  document.querySelector('#exportModal').classList.add('open');
+  document.querySelector('#exportModal').setAttribute('aria-hidden','false');
+  document.querySelector('#confirmExport').focus();
+  const r=await fetch('/api/export/options',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected:[...selected]})});
+  const d=await r.json();
+  if(!r.ok){document.querySelector('#exportAudioNote').textContent=d.error||'Could not load audio languages.';return;}
+  const languages=d.languages||[];
+  document.querySelector('#exportAudioLanguage').innerHTML='<option value="">Default audio</option>'+languages.map(item=>`<option value="${esc(item.language)}">${esc(item.language.toUpperCase())}${item.titles?.length?` · ${esc(item.titles.join(', '))}`:''}</option>`).join('');
+  document.querySelector('#exportAudioNote').textContent=languages.length?'Choose the language to use for exported clips. Videos without that language fall back to default audio.':'No explicit audio languages found; default audio will be used.';
+}
+function closeExportModal(){document.querySelector('#exportModal').classList.remove('open');document.querySelector('#exportModal').setAttribute('aria-hidden','true');}
+async function confirmExport(){
+  setStatus('Exporting…');
+  const r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected:[...selected],generate_mp4:!document.querySelector('#galleryOnly').checked,audio_language:document.querySelector('#exportAudioLanguage').value})});
+  const d=await r.json();
+  if(r.ok)closeExportModal();
+  setStatus(r.ok?`Exported ${d.count} scenes to ${d.output}`:d.error);
+}
+document.querySelector('#export').onclick=openExportModal;
+document.querySelector('#confirmExport').onclick=confirmExport;
+document.querySelector('#closeExportModal').onclick=closeExportModal;
+document.querySelector('#exportModal').onclick=e=>{if(e.target.id==='exportModal')closeExportModal();};
 function openProcessModal(){document.querySelector('#processModal').classList.add('open');document.querySelector('#processModal').setAttribute('aria-hidden','false');document.querySelector('#folderPath').focus();}
 function closeProcessModal(){document.querySelector('#processModal').classList.remove('open');document.querySelector('#processModal').setAttribute('aria-hidden','true');}
 async function chooseFolder(){

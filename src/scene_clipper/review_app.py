@@ -57,6 +57,21 @@ def ffmpeg_preview_command(video, start, end, output, audio_track=None):
     ]
 
 
+def audio_tracks(video):
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=index:stream_tags=language,title",
+         "-of", "json", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    tracks = []
+    for order, stream in enumerate(json.loads(result.stdout or "{}").get("streams", [])):
+        tags = stream.get("tags", {})
+        tracks.append({"track": order, "stream_index": stream.get("index"),
+                       "language": tags.get("language", "und"), "title": tags.get("title", "")})
+    return tracks
+
+
 def create_app(catalog_root: Path, export_root: Path, exporter=export_selection):
     app = Flask(__name__)
     catalog_root = Path(catalog_root)
@@ -230,10 +245,40 @@ def create_app(catalog_root: Path, export_root: Path, exporter=export_selection)
         if not scenes:
             return jsonify(error="Select at least one scene"), 400
         try:
-            out = exporter(scenes, export_root, bool(body.get("generate_mp4")))
+            audio_language = body.get("audio_language") or None
+            if audio_language:
+                out = exporter(scenes, export_root, bool(body.get("generate_mp4")), audio_language)
+            else:
+                out = exporter(scenes, export_root, bool(body.get("generate_mp4")))
         except Exception as exc:
             return jsonify(error=str(exc)), 500
         return jsonify(output=str(out), count=len(scenes))
+
+    @app.post("/api/export/options")
+    def export_options():
+        body = request.get_json() or {}
+        selected = body.get("selected", [])
+        mapping = scene_map()
+        scenes = [mapping[x] for x in selected if x in mapping]
+        if not scenes:
+            return jsonify(error="Select at least one scene"), 400
+        languages = {}
+        failures = []
+        for video in sorted({scene["video"] for scene in scenes}):
+            try:
+                for track in audio_tracks(video):
+                    language = track.get("language") or "und"
+                    item = languages.setdefault(language, {"language": language, "titles": set(), "count": 0})
+                    if track.get("title"):
+                        item["titles"].add(track["title"])
+                    item["count"] += 1
+            except subprocess.CalledProcessError as exc:
+                failures.append({"video": video, "error": (exc.stderr or "ffprobe failed").strip()[-500:]})
+        payload = [
+            {"language": language, "titles": sorted(item["titles"]), "count": item["count"]}
+            for language, item in sorted(languages.items())
+        ]
+        return jsonify({"languages": payload, "failures": failures})
 
     @app.get("/api/subtitles/search")
     def subtitle_search():
@@ -288,19 +333,9 @@ def create_app(catalog_root: Path, export_root: Path, exporter=export_selection)
     def media_tracks():
         try:
             video = _video_arg(request.args.get("video"))
-            result = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "a",
-                 "-show_entries", "stream=index:stream_tags=language,title",
-                 "-of", "json", str(video)],
-                check=True, capture_output=True, text=True,
-            )
+            tracks = audio_tracks(video)
         except (ValueError, subprocess.CalledProcessError) as exc:
             return jsonify(error=str(exc)), 400
-        tracks = []
-        for order, stream in enumerate(json.loads(result.stdout or "{}").get("streams", [])):
-            tags = stream.get("tags", {})
-            tracks.append({"track": order, "stream_index": stream.get("index"),
-                           "language": tags.get("language", "und"), "title": tags.get("title", "")})
         return jsonify(tracks)
 
     @app.post("/api/clip")

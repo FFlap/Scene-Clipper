@@ -48,6 +48,7 @@ body.library-mode #sidebar{display:none}
 .back-btn{width:100%;display:flex;align-items:center;gap:10px;font-size:14px;color:var(--subtle);background:transparent;border:none;border-radius:8px;padding:10px 12px;text-align:left;cursor:pointer}
 .back-btn:hover{background:var(--hover-bg);color:var(--text)}
 input{width:100%;color:var(--text);background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
+select{color:var(--text);background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
 input:focus{outline:none;border-color:var(--hover-border);box-shadow:0 0 0 2px var(--active-glow)}
 .path-input{font-size:12px}
 .mini-row{display:flex;align-items:center;gap:8px}
@@ -127,6 +128,7 @@ body.library-mode #libraryScreen{display:block}
 .folder-row input{flex:1;min-width:0}
 .folder-row .small-btn{white-space:nowrap}
 .modal-actions{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:16px}
+.export-modal select{width:100%;margin-bottom:8px}
 .empty{color:var(--muted);padding:18px}
 .empty.small{font-size:12px;padding:8px 12px}
 /* Subtitle search */
