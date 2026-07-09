@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image
 import pytest
 
-from scene_clipper.exporter import export_selection, ffmpeg_clip_command
+from scene_clipper.exporter import export_selection, ffmpeg_clip_command, format_filename_timestamp
 
 
 def test_empty_selection_rejected(tmp_path):
@@ -58,3 +58,9 @@ def test_export_selection_uses_requested_audio_language(monkeypatch, tmp_path):
     export_selection(selected, tmp_path / "exports", True, "eng")
 
     assert "0:a:1" in calls[0]
+    assert Path(calls[0][-1]).name == "001-E01-[1s-5s].mp4"
+
+
+def test_filename_timestamp_includes_minutes_only_when_needed():
+    assert format_filename_timestamp(5) == "5s"
+    assert format_filename_timestamp(65) == "1m05s"

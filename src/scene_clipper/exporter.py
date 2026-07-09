@@ -52,6 +52,11 @@ def format_timestamp(seconds):
     return f"{minutes}:{secs:02}.{ms:03}"
 
 
+def format_filename_timestamp(seconds):
+    minutes, secs = divmod(round(float(seconds)), 60)
+    return f"{minutes}m{secs:02}s" if minutes else f"{secs}s"
+
+
 def selection_record(item):
     source=Path(item["video"]).name
     timestamp=f"{format_timestamp(item['start'])}–{format_timestamp(item['end'])}"
@@ -71,7 +76,9 @@ def export_selection(selected, root: Path, generate_clips: bool, audio_language:
         grid.paste(tile,(((index-1)%cols)*cw,((index-1)//cols)*ch))
         if generate_clips:
             audio_track = audio_track_for_language(item["video"], audio_language)
-            subprocess.run(ffmpeg_clip_command(item["video"], item["start"], item["end"], out/f"{index:03}-{item['episode']}.mp4", audio_track), check=True)
+            timestamp_range = f"{format_filename_timestamp(item['start'])}-{format_filename_timestamp(item['end'])}"
+            clip_name = f"{index:03}-{item['episode']}-[{timestamp_range}].mp4"
+            subprocess.run(ffmpeg_clip_command(item["video"], item["start"], item["end"], out/clip_name, audio_track), check=True)
     grid.save(out/"selected-grid.jpg",quality=90)
     (out/"selection.json").write_text(json.dumps({"clips_generated":generate_clips,"scenes":records},indent=2)+"\n")
     return out
