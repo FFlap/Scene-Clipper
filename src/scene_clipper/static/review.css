@@ -38,7 +38,7 @@ body.library-mode #sidebar{display:none}
 .rail-btn svg,.icon-btn svg,.back-btn svg{width:18px;height:18px;display:block;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
 .sb-top{padding:12px 14px 10px;border-bottom:1px solid var(--line);flex-shrink:0;background:var(--panel);z-index:2}
 .sb-row{display:flex;gap:8px;align-items:center;margin-bottom:12px}
-.sb-title{display:flex;align-items:center;gap:9px;font-weight:800;font-size:22px;flex:1;letter-spacing:-.02em}
+.sb-title{display:flex;align-items:center;gap:9px;font-weight:800;font-size:22px;flex:1;letter-spacing:-.02em;cursor:pointer}
 .sb-logo{width:28px;height:28px;display:grid;place-items:center;color:var(--active)}
 .icon-btn{width:36px;height:36px;border:1px solid var(--hover-border);border-radius:6px;background:var(--line)}
 .icon-btn.subtle{background:transparent;border:none;color:var(--dim)}
