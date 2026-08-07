@@ -38,7 +38,7 @@
         <p>Choose a prepared episode folder, or process a new folder into a review library.</p>
       </div>
       <div class="library-panel">
-        <div class="library-actions-row"><button class="process-primary" id="processFromLibrary">Process Episodes</button></div>
+        <div class="library-actions-row"><button class="process-primary" id="processFromLibrary">Process Episodes</button><button class="process-secondary" id="settingsFromLibrary">Settings</button></div>
         <div id="libraryGrid"></div>
       </div>
     </section>
@@ -96,9 +96,32 @@
     <label class="field-label" for="exportAudioLanguage">Audio language</label>
     <select id="exportAudioLanguage"><option value="">Default audio</option></select>
     <p class="modal-note tight" id="exportAudioNote"></p>
+    <label class="field-label">AI clip descriptions</label>
+    <label class="check-row"><input id="describeClips" type="checkbox"> Describe each clip with AI</label>
+    <p class="modal-note tight" id="describeNote"></p>
     <div class="modal-actions">
       <label class="check-row"><input id="galleryOnly" type="checkbox"> Generate Gallery Only</label>
       <button class="primary-btn compact" id="confirmExport">Export</button>
+    </div>
+  </section>
+</div>
+<div class="modal-backdrop" id="settingsModal" aria-hidden="true">
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-head">
+      <div>
+        <h2 id="settingsTitle">Settings</h2>
+        <p class="modal-note tight" id="modelNote"></p>
+      </div>
+      <button class="icon-btn subtle" id="closeSettingsModal" title="Close">×</button>
+    </div>
+    <label class="field-label" for="googleKey">Google API key</label>
+    <div class="folder-row">
+      <input id="googleKey" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…">
+      <button class="small-btn" id="clearKeyBtn" type="button">Clear</button>
+    </div>
+    <p class="modal-note tight" id="keyStatus"></p>
+    <div class="modal-actions">
+      <button class="primary-btn compact" id="saveSettingsBtn">Save</button>
     </div>
   </section>
 </div>
@@ -185,9 +208,50 @@ async function loadCatalog(value=document.querySelector('#similarity').value){
 }
 showLibraryScreen();loadLibraries();
 let timer;document.querySelector('#similarity').oninput=e=>{document.querySelector('#similarity-value').textContent=e.target.value;clearTimeout(timer);timer=setTimeout(()=>loadCatalog(e.target.value),250)};
+// ---------- Settings ----------
+let appSettings={has_api_key:false,api_key_hint:'',model:''};
+async function loadSettings(){
+  appSettings=await fetch('/api/settings').then(r=>r.json()).catch(()=>appSettings);
+  fillSettingsForm();
+}
+function fillSettingsForm(){
+  document.querySelector('#googleKey').value='';
+  document.querySelector('#keyStatus').textContent=appSettings.has_api_key
+    ?`Key saved (${appSettings.api_key_hint}). Leave blank to keep it, or paste a new one to replace it.`
+    :'No key saved. Create one at aistudio.google.com/apikey.';
+  document.querySelector('#modelNote').textContent=`AI clip descriptions use ${appSettings.model||''}.`;
+}
+function openSettingsModal(){
+  fillSettingsForm();
+  document.querySelector('#settingsModal').classList.add('open');
+  document.querySelector('#settingsModal').setAttribute('aria-hidden','false');
+  document.querySelector('#googleKey').focus();
+}
+function closeSettingsModal(){document.querySelector('#settingsModal').classList.remove('open');document.querySelector('#settingsModal').setAttribute('aria-hidden','true');}
+async function postSettings(body){
+  const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!r.ok){setStatus(d.error||'Could not save settings');return null;}
+  appSettings=d;fillSettingsForm();return d;
+}
+async function saveSettings(){
+  const key=document.querySelector('#googleKey').value.trim();
+  if(await postSettings(key?{google_api_key:key}:{})){closeSettingsModal();setStatus('Settings saved.');}
+}
+document.querySelector('#settingsFromLibrary').onclick=openSettingsModal;
+document.querySelector('#closeSettingsModal').onclick=closeSettingsModal;
+document.querySelector('#settingsModal').onclick=e=>{if(e.target.id==='settingsModal')closeSettingsModal();};
+document.querySelector('#saveSettingsBtn').onclick=saveSettings;
+document.querySelector('#clearKeyBtn').onclick=async()=>{if(await postSettings({google_api_key:'',clear_api_key:true}))setStatus('Google API key cleared.');};
+loadSettings();
 async function openExportModal(){
   if(!selected.size){setStatus('Select at least one scene');return;}
   document.querySelector('#exportSummary').textContent=`${selected.size} selected scene${selected.size===1?'':'s'}`;
+  await loadSettings();
+  const describe=document.querySelector('#describeClips');
+  describe.disabled=!appSettings.has_api_key;
+  describe.checked=false;
+  document.querySelector('#describeNote').textContent=appSettings.has_api_key?'':'Add a Google API key in Settings to describe clips.';
   document.querySelector('#exportAudioLanguage').innerHTML='<option value="">Default audio</option>';
   document.querySelector('#exportAudioNote').textContent='Loading audio languages…';
   document.querySelector('#exportModal').classList.add('open');
@@ -202,11 +266,12 @@ async function openExportModal(){
 }
 function closeExportModal(){document.querySelector('#exportModal').classList.remove('open');document.querySelector('#exportModal').setAttribute('aria-hidden','true');}
 async function confirmExport(){
-  setStatus('Exporting…');
-  const r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected:[...selected],generate_mp4:!document.querySelector('#galleryOnly').checked,audio_language:document.querySelector('#exportAudioLanguage').value})});
+  const describe=document.querySelector('#describeClips').checked&&!document.querySelector('#describeClips').disabled;
+  setStatus(describe?`Exporting and describing ${selected.size} clip${selected.size===1?'':'s'}… this can take a while.`:'Exporting…');
+  const r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected:[...selected],generate_mp4:!document.querySelector('#galleryOnly').checked,audio_language:document.querySelector('#exportAudioLanguage').value,describe_clips:describe})});
   const d=await r.json();
   if(r.ok)closeExportModal();
-  setStatus(r.ok?`Exported ${d.count} scenes to ${d.output}`:d.error);
+  setStatus(r.ok?`Exported ${d.count} scenes to ${d.output}${d.described?' with summary.json':''}`:d.error);
 }
 document.querySelector('#export').onclick=openExportModal;
 document.querySelector('#confirmExport').onclick=confirmExport;

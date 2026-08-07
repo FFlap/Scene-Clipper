@@ -63,7 +63,25 @@ def selection_record(item):
     return {**item,"source_file":source,"timestamp":timestamp}
 
 
-def export_selection(selected, root: Path, generate_clips: bool, audio_language: str | None = None):
+def clip_filename(index, item):
+    timestamp_range=f"{format_filename_timestamp(item['start'])}-{format_filename_timestamp(item['end'])}"
+    return f"{index:03}-{item['episode']}-[{timestamp_range}].mp4"
+
+
+def clip_summary(records, describer):
+    """The clip file name plus the schema fields; a failed clip records its error instead."""
+    clips=[]
+    for index,item in enumerate(records,1):
+        entry={"clip":clip_filename(index,item)}
+        try:
+            entry.update(describer(item))
+        except Exception as exc:
+            entry["error"]=str(exc)
+        clips.append(entry)
+    return {"clips":clips}
+
+
+def export_selection(selected, root: Path, generate_clips: bool, audio_language: str | None = None, describer=None):
     if not selected: raise ValueError("Select at least one scene")
     out=root/(datetime.now().strftime("%Y%m%d-%H%M%S-%f")); out.mkdir(parents=True)
     records=[selection_record(item) for item in selected]
@@ -76,9 +94,9 @@ def export_selection(selected, root: Path, generate_clips: bool, audio_language:
         grid.paste(tile,(((index-1)%cols)*cw,((index-1)//cols)*ch))
         if generate_clips:
             audio_track = audio_track_for_language(item["video"], audio_language)
-            timestamp_range = f"{format_filename_timestamp(item['start'])}-{format_filename_timestamp(item['end'])}"
-            clip_name = f"{index:03}-{item['episode']}-[{timestamp_range}].mp4"
+            clip_name = clip_filename(index, item)
             subprocess.run(ffmpeg_clip_command(item["video"], item["start"], item["end"], out/clip_name, audio_track), check=True)
     grid.save(out/"selected-grid.jpg",quality=90)
+    if describer: (out/"summary.json").write_text(json.dumps(clip_summary(records,describer),indent=2)+"\n")
     (out/"selection.json").write_text(json.dumps({"clips_generated":generate_clips,"scenes":records},indent=2)+"\n")
     return out

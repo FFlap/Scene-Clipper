@@ -129,6 +129,11 @@ body.library-mode #libraryScreen{display:block}
 .folder-row .small-btn{white-space:nowrap}
 .modal-actions{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:16px}
 .export-modal select{width:100%;margin-bottom:8px}
+.modal-note:empty{display:none}
+#settingsModal .check-row{white-space:normal;line-height:1.4;align-items:flex-start}
+#settingsModal .check-row input{margin-top:2px;flex-shrink:0}
+#exportModal .check-row input:disabled{accent-color:var(--dim)}
+#exportModal .check-row:has(input:disabled){color:var(--dim)}
 .empty{color:var(--muted);padding:18px}
 .empty.small{font-size:12px;padding:8px 12px}
 /* Subtitle search */

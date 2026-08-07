@@ -3,6 +3,7 @@ from pathlib import Path
 from PIL import Image
 import pytest
 
+from scene_clipper.describe import DESCRIPTION_FIELDS
 from scene_clipper.exporter import export_selection, ffmpeg_clip_command, format_filename_timestamp
 
 
@@ -59,6 +60,80 @@ def test_export_selection_uses_requested_audio_language(monkeypatch, tmp_path):
 
     assert "0:a:1" in calls[0]
     assert Path(calls[0][-1]).name == "001-E01-[1s-5s].mp4"
+
+
+def test_export_writes_one_summary_json_for_the_described_clips(tmp_path):
+    thumb = tmp_path / "thumb.jpg"; Image.new("RGB", (100, 60), "red").save(thumb)
+    selected = [
+        {"id":"a", "episode":"E01", "video":"/tmp/e01.mkv", "start":1.0, "end":5.0, "thumbnail":str(thumb)},
+        {"id":"b", "episode":"E01", "video":"/tmp/e01.mkv", "start":9.0, "end":12.0, "thumbnail":str(thumb)},
+    ]
+
+    def describer(scene):
+        return {
+            "summary": f"summary for {scene['id']}", "action": "she turns to the camera",
+            "characters": [{"identity": "girl in red scarf", "appearance": "black bob", "expression": "wary", "action": "turns"}],
+            "setting": "rooftop at dusk", "mood": "tense", "themes": ["rivalry"],
+            "visual_style": "warm backlight", "tags": ["rooftop", "dusk"],
+        }
+
+    out = export_selection(selected, tmp_path / "exports", False, describer=describer)
+
+    clips = json.loads((out / "summary.json").read_text())["clips"]
+    assert [clip["summary"] for clip in clips] == ["summary for a", "summary for b"]
+    assert clips[0]["tags"] == ["rooftop", "dusk"]
+    assert clips[1]["clip"] == "002-E01-[9s-12s].mp4"
+    assert set(clips[0]) == {"clip", *DESCRIPTION_FIELDS}
+    assert sorted(path.name for path in out.iterdir()) == ["selected-grid.jpg", "selection.json", "summary.json"]
+    assert "description" not in json.loads((out / "selection.json").read_text())["scenes"][0]
+
+
+def test_a_failed_description_does_not_abort_the_export(tmp_path):
+    thumb = tmp_path / "thumb.jpg"; Image.new("RGB", (100, 60), "red").save(thumb)
+    selected = [
+        {"id":"a", "episode":"E01", "video":"/tmp/e01.mkv", "start":1.0, "end":5.0, "thumbnail":str(thumb)},
+        {"id":"b", "episode":"E01", "video":"/tmp/e01.mkv", "start":9.0, "end":12.0, "thumbnail":str(thumb)},
+    ]
+
+    def describer(scene):
+        if scene["id"] == "a":
+            raise RuntimeError("Google API returned 429: rate limited")
+        return {"summary": "second description"}
+
+    out = export_selection(selected, tmp_path / "exports", False, describer=describer)
+
+    clips = json.loads((out / "summary.json").read_text())["clips"]
+    assert clips[0] == {"clip": "001-E01-[1s-5s].mp4", "error": "Google API returned 429: rate limited"}
+    assert clips[1]["summary"] == "second description"
+    assert "error" not in clips[1]
+    assert (out / "selected-grid.jpg").exists()
+
+
+def test_export_without_a_describer_writes_no_summary(tmp_path):
+    thumb = tmp_path / "thumb.jpg"; Image.new("RGB", (100, 60), "red").save(thumb)
+    selected = [{"id":"x", "episode":"E01", "video":"/tmp/e01.mkv", "start":1.0, "end":5.0, "thumbnail":str(thumb)}]
+
+    out = export_selection(selected, tmp_path / "exports", False)
+
+    assert not (out / "summary.json").exists()
+    assert "description" not in json.loads((out / "selection.json").read_text())["scenes"][0]
+
+
+def test_summary_names_match_the_generated_mp4_files(monkeypatch, tmp_path):
+    thumb = tmp_path / "thumb.jpg"; Image.new("RGB", (100, 60), "red").save(thumb)
+    selected = [{"id":"a", "episode":"E01", "video":"/tmp/e01.mkv", "start":1.0, "end":5.0, "thumbnail":str(thumb)}]
+    rendered = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] != "ffprobe":
+            rendered.append(Path(cmd[-1]).name)
+        return type("Result", (), {"stdout": '{"streams":[]}'})()
+
+    monkeypatch.setattr("scene_clipper.exporter.subprocess.run", fake_run)
+
+    out = export_selection(selected, tmp_path / "exports", True, describer=lambda scene: {"summary": "ok"})
+
+    assert json.loads((out / "summary.json").read_text())["clips"][0]["clip"] == rendered[0]
 
 
 def test_filename_timestamp_includes_minutes_only_when_needed():

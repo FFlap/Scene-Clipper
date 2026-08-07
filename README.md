@@ -9,6 +9,7 @@ Turn episode folders into a fast local scene-review UI, select the shots you wan
 * Creates small representative thumbnails for quick review.
 * Groups visually similar shots with perceptual hashes and SigLIP embeddings.
 * Exports selected scenes as re-encoded MP4 clips by default.
+* Optionally generates AI descriptions of exported clips.
 
 ## Install for development
 

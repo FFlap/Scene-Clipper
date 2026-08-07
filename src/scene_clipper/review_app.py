@@ -11,7 +11,9 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_file
 
 from .catalog import VIDEO_EXTENSIONS, find_videos, load_catalog, preprocess_directory
+from .describe import clip_describer
 from .exporter import export_selection, ffmpeg_clip_command
+from .settings import load_settings, public_settings, save_settings, settings_path
 from .subtitles import cues_in_range, search_folder
 
 
@@ -72,7 +74,7 @@ def audio_tracks(video):
     return tracks
 
 
-def create_app(catalog_root: Path, export_root: Path, exporter=export_selection):
+def create_app(catalog_root: Path, export_root: Path, exporter=export_selection, describer_factory=clip_describer):
     app = Flask(__name__)
     catalog_root = Path(catalog_root)
     export_root = Path(export_root)
@@ -80,6 +82,10 @@ def create_app(catalog_root: Path, export_root: Path, exporter=export_selection)
     scene_cache = {"mtime": 0.0, "mapping": {}}
     subtitle_cache = catalog_root / ".subtitle-cache"
     preview_cache = catalog_root / ".preview-cache"
+    config_path = settings_path(catalog_root)
+
+    def settings():
+        return load_settings(config_path)
 
     def _video_arg(value: str) -> Path:
         video = Path(str(value or "").strip()).expanduser()
@@ -244,15 +250,19 @@ def create_app(catalog_root: Path, export_root: Path, exporter=export_selection)
         scenes = [mapping[x] for x in selected if x in mapping]
         if not scenes:
             return jsonify(error="Select at least one scene"), 400
+        options = {}
+        if body.get("audio_language"):
+            options["audio_language"] = body["audio_language"]
+        if body.get("describe_clips"):
+            api_key = settings()["google_api_key"]
+            if not api_key:
+                return jsonify(error="Add a Google API key in Settings to describe clips"), 400
+            options["describer"] = describer_factory(api_key)
         try:
-            audio_language = body.get("audio_language") or None
-            if audio_language:
-                out = exporter(scenes, export_root, bool(body.get("generate_mp4")), audio_language)
-            else:
-                out = exporter(scenes, export_root, bool(body.get("generate_mp4")))
+            out = exporter(scenes, export_root, bool(body.get("generate_mp4")), **options)
         except Exception as exc:
             return jsonify(error=str(exc)), 500
-        return jsonify(output=str(out), count=len(scenes))
+        return jsonify(output=str(out), count=len(scenes), described=bool(options.get("describer")))
 
     @app.post("/api/export/options")
     def export_options():
@@ -279,6 +289,21 @@ def create_app(catalog_root: Path, export_root: Path, exporter=export_selection)
             for language, item in sorted(languages.items())
         ]
         return jsonify({"languages": payload, "failures": failures})
+
+    @app.get("/api/settings")
+    def settings_index():
+        return jsonify(public_settings(settings()))
+
+    @app.post("/api/settings")
+    def settings_update():
+        body = request.get_json() or {}
+        updates = {}
+        if "google_api_key" in body:
+            key = str(body["google_api_key"] or "").strip()
+            # An untouched key field arrives blank; only clear it on an explicit request.
+            if key or body.get("clear_api_key"):
+                updates["google_api_key"] = key
+        return jsonify(public_settings(save_settings(config_path, updates)))
 
     @app.get("/api/subtitles/search")
     def subtitle_search():

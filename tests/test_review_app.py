@@ -1,6 +1,7 @@
 import json
 import time
 import subprocess
+from scene_clipper.describe import MODEL
 from scene_clipper.review_app import create_app, ffmpeg_preview_command
 
 
@@ -69,6 +70,94 @@ def test_export_uses_unique_scene_ids_across_libraries(tmp_path):
 
     assert response.status_code == 200
     assert calls[0][0]["video"] == "b.mkv"
+
+
+def _catalog_with_one_scene(root):
+    catalog_dir = root / "E01"
+    catalog_dir.mkdir(parents=True)
+    scene = {"id": "x", "episode": "E01", "video": "a.mkv", "start": 1, "end": 5, "thumbnail": "x.jpg"}
+    (catalog_dir / "catalog.json").write_text(json.dumps({"episode": "E01", "scenes": [scene]}))
+
+
+def test_settings_round_trip_without_exposing_the_key(tmp_path):
+    client = create_app(tmp_path / "catalog", tmp_path / "exports").test_client()
+
+    assert client.get("/api/settings").json["has_api_key"] is False
+
+    saved = client.post("/api/settings", json={"google_api_key": "AIzaSyExampleKey123"}).json
+
+    assert saved["has_api_key"] is True
+    assert "google_api_key" not in saved
+    assert client.get("/api/settings").json["model"] == MODEL
+
+
+def test_blank_key_field_keeps_the_stored_key_but_clearing_removes_it(tmp_path):
+    client = create_app(tmp_path / "catalog", tmp_path / "exports").test_client()
+    client.post("/api/settings", json={"google_api_key": "AIzaSyExampleKey123"})
+
+    client.post("/api/settings", json={"google_api_key": ""})
+    assert client.get("/api/settings").json["has_api_key"] is True
+
+    client.post("/api/settings", json={"google_api_key": "", "clear_api_key": True})
+    assert client.get("/api/settings").json["has_api_key"] is False
+
+
+def test_export_builds_a_describer_from_the_saved_settings(tmp_path):
+    _catalog_with_one_scene(tmp_path / "catalog")
+    built = []
+    exports = []
+
+    def exporter(selected, root, clips, describer=None, **kwargs):
+        exports.append(describer)
+        out = root / "done"
+        out.mkdir(parents=True)
+        return out
+
+    app = create_app(
+        tmp_path / "catalog", tmp_path / "exports", exporter,
+        describer_factory=lambda api_key: built.append(api_key) or (lambda scene: "described"),
+    )
+    client = app.test_client()
+    client.post("/api/settings", json={"google_api_key": "AIzaSyExampleKey123"})
+
+    response = client.post("/api/export", json={"selected": ["x"], "generate_mp4": False, "describe_clips": True})
+
+    assert response.status_code == 200
+    assert response.json["described"] is True
+    assert built == ["AIzaSyExampleKey123"]
+    assert exports[0] is not None
+
+
+def test_export_rejects_descriptions_without_an_api_key(tmp_path):
+    _catalog_with_one_scene(tmp_path / "catalog")
+    calls = []
+
+    def exporter(selected, root, clips, **kwargs):
+        calls.append(kwargs)
+        out = root / "done"
+        out.mkdir(parents=True)
+        return out
+
+    client = create_app(tmp_path / "catalog", tmp_path / "exports", exporter).test_client()
+
+    response = client.post("/api/export", json={"selected": ["x"], "generate_mp4": False, "describe_clips": True})
+
+    assert response.status_code == 400
+    assert "API key" in response.json["error"]
+    assert calls == []
+
+
+def test_settings_control_lives_only_on_the_library_screen(tmp_path):
+    page = create_app(tmp_path / "catalog", tmp_path / "exports").test_client().get("/").get_data(as_text=True)
+    sidebar = page.split('<aside id="sidebar">')[1].split("</aside>")[0]
+    topbar = page.split('<header id="topbar">')[1].split("</header>")[0]
+
+    assert 'id="settingsFromLibrary"' in page.split('<section id="libraryScreen">')[1]
+    assert "settings" not in sidebar.lower()
+    assert "settings" not in topbar.lower()
+    assert 'id="describeClips"' in page
+    assert "testSettingsBtn" not in page
+    assert "describeByDefault" not in page
 
 
 def test_preprocess_reports_partial_failures(monkeypatch, tmp_path):
