@@ -13,7 +13,7 @@ from scene_clipper.review_app import create_app  # noqa: E402
 
 def main() -> int:
     argv = sys.argv[1:]
-    if argv and argv[0] not in {"-h", "--help"} and argv[0].startswith("-"):
+    if not argv or (argv[0] not in {"-h", "--help"} and argv[0].startswith("-")):
         argv = ["run", *argv]
     parser = argparse.ArgumentParser(description="Scene Clipper")
     subparsers = parser.add_subparsers(dest="command")
