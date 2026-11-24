@@ -25,7 +25,19 @@ def main() -> int:
     preprocess_parser.add_argument("video_directory", type=Path)
     preprocess_parser.add_argument("--output", type=Path, default=ROOT / "data" / "scene-catalog")
     preprocess_parser.add_argument("--rebuild", action="store_true")
+    index_parser = subparsers.add_parser("index-search", help="Build the EmbeddingGemma search index for a library")
+    index_parser.add_argument("library", type=Path, help="Library folder, e.g. data/scene-catalog/<library-id>")
+    index_parser.add_argument("--catalog", type=Path, default=ROOT / "data" / "scene-catalog")
+    index_parser.add_argument("--rebuild", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "index-search":
+        from scene_clipper.semantic_search import build_index
+        result = build_index(
+            args.library, args.catalog / ".subtitle-cache", rebuild=args.rebuild,
+            progress=lambda n, total, name: print(f"[{n}/{total}] {name}", flush=True),
+        )
+        print(f"Indexed {result['indexed']} episodes ({result['scenes']} scenes); {result['skipped']} already current")
+        return 0
     if args.command == "preprocess":
         result = preprocess_directory(args.video_directory, args.output, args.rebuild, continue_on_error=True)
         print(f"Prepared {len(result['results'])} videos; {len(result['failures'])} failed")

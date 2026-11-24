@@ -4,4 +4,5 @@ Pillow>=10
 scenedetect[opencv]>=0.6.5
 torch>=2.2
 transformers>=4.47
+sentence-transformers>=6.3
 pytest>=8
