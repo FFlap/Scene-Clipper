@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 
 from scene_clipper import semantic_search as ss
+from scene_clipper.review_app import create_app
 
 
 class FakeEmbedder:
@@ -98,6 +99,32 @@ def test_build_index_then_search_ranks_across_episodes(tmp_path, monkeypatch):
     catalog = library / "E02" / "catalog.json"
     catalog.write_text(catalog.read_text())
     assert ss.index_status(library)["indexed_count"] == 1
+
+
+def test_scene_search_routes(tmp_path):
+    root = tmp_path / "catalog"
+    make_library(root / "lib", {"E01": [(0, 4), (4, 9)]})
+    embedder = FakeEmbedder()
+    dialogues = iter([["walking in the rain", "at the gym"]])
+    embedder.embed_scenes = lambda images, _d: FakeEmbedder.embed_scenes(embedder, images, next(dialogues))
+    client = create_app(root, tmp_path / "exports", search_embedder_factory=lambda: embedder).test_client()
+
+    assert client.get("/api/scene-search?library=lib&q=gym").status_code == 409
+    assert client.get("/api/scene-search?library=lib&q=g").status_code == 400
+    assert client.get("/api/scene-search/status?library=lib").json["indexed_count"] == 0
+
+    client.post("/api/scene-search/index", json={"library": "lib"})
+    for _ in range(100):
+        job = client.get("/api/scene-search/status?library=lib").json["job"]
+        if job["status"] in {"done", "error"}:
+            break
+        time.sleep(0.02)
+    assert job["status"] == "done", job
+
+    response = client.get("/api/scene-search?library=lib&q=gym")
+    assert response.status_code == 200
+    top = response.json["results"][0]
+    assert top["id"] == "E01-0002" and top["start"] == 4 and "score" in top
 
 
 def test_search_drops_near_duplicate_hits(tmp_path):

@@ -47,6 +47,7 @@
         <h1 id="pageTitle">Select a library</h1>
       </div>
       <div class="actions">
+        <form class="scene-search" id="sceneSearch" autocomplete="off"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg><input id="sceneQuery" type="search" placeholder="Describe a scene or line…" aria-label="Search scenes"></form>
         <label class="similarity">Similarity <output id="similarity-value">20</output><input id="similarity" type="range" min="0" max="100" value="20"></label>
         <span id="count">0 selected</span>
         <button id="export">Export selection</button>
@@ -188,7 +189,7 @@ function showLibraryScreen(){
   document.body.classList.add('library-mode');
   document.querySelector('#openSearchModal').hidden=true;
   closeSearchModal();
-  activeLibrary=null;catalog=[];selected.clear();update();render();
+  activeLibrary=null;searchView=null;catalog=[];selected.clear();update();render();
 }
 function showReviewScreen(){
   document.body.classList.remove('library-mode');
@@ -200,6 +201,7 @@ function renderLibraries(){
   root.querySelectorAll('.library-card').forEach(btn=>btn.onclick=()=>{activeLibrary=btn.dataset.id;selected.clear();update();showReviewScreen();loadCatalog();renderLibraries();});
 }
 function render(){
+  if(searchView){renderSearch();return;}
   const nav=document.querySelector('#navigator'),root=document.querySelector('#episodes');
   const active=libraries.find(x=>x.id===activeLibrary);
   document.querySelector('#pageTitle').textContent=active?active.name:'Select a library';
@@ -220,6 +222,9 @@ async function loadCatalog(value=document.querySelector('#similarity').value){
   catalog=await fetch(`/api/catalog?${params}`).then(r=>r.json());
   render();setStatus('');
 }
+// ---------- Scene search (EmbeddingGemma 2) ----------
+let searchView=null,indexPoll=null;
+const shortEp=name=>{const m=String(name).match(/S(\d+)E(\d+)/i);return m?`S${m[1]}E${m[2]}`:name;};
 function toggleSelected(id){selected.has(id)?selected.delete(id):selected.add(id);document.querySelectorAll(`.card[data-id="${CSS.escape(id)}"]`).forEach(c=>c.classList.toggle('selected',selected.has(id)));update();}
 function bindCards(root){root.querySelectorAll('.card').forEach(card=>card.onclick=e=>{if(e.target.closest('[data-play]')){e.stopPropagation();openScenePlayer(card.dataset.id);return;}toggleSelected(card.dataset.id);});}
 // ---------- Scene player ----------
@@ -261,6 +266,53 @@ document.addEventListener('keydown',e=>{
   else if(e.key==='ArrowRight') document.querySelector('#sceneNext').click();
   else if(e.key==='s'||e.key==='Enter'){e.preventDefault();document.querySelector('#sceneSelect').click();}
 });
+function clearSearch(){searchView=null;document.querySelector('#sceneQuery').value='';clearInterval(indexPoll);render();}
+function renderSearch(){
+  const root=document.querySelector('#episodes');
+  const v=searchView;
+  let body;
+  if(v.state==='loading') body='<p class="empty">Searching… the first search loads the model (~15s).</p>';
+  else if(v.state==='needs-index') body=`<div class="search-empty"><p>This library has no search index yet${v.status.indexed_count?` (${v.status.indexed_count}/${v.status.episode_count} episodes indexed)`:''}.</p><p class="modal-note">Indexing embeds every scene's thumbnail and dialogue once. Expect about 0.3s per scene.</p><button class="primary-btn compact" id="buildIndex">Build search index</button></div>`;
+  else if(v.state==='indexing') body=`<div class="search-empty"><p>${esc(v.job?.message||'Indexing…')}</p><p class="modal-note">You can keep browsing. Search runs when indexing finishes.</p></div>`;
+  else if(v.state==='error') body=`<p class="empty">${esc(v.error)}</p>`;
+  else body=v.results.length?`<div class="grid">${v.results.map((s,i)=>`<button class="card result ${selected.has(s.id)?'selected':''}" data-id="${esc(s.id)}" title="${esc(s.dialogue)}"><img loading="lazy" decoding="async" src="/thumbnail/${encodeURIComponent(s.id)}"><i class="play" data-play title="Play scene" aria-label="Play scene"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg></i><span><b>${i+1}</b> ${esc(shortEp(s.episode))} · ${fmt(s.start)}–${fmt(s.end)}</span><small>${s.dialogue?`“${esc(s.dialogue.slice(0,90))}${s.dialogue.length>90?'…':''}”`:'<i>no dialogue</i>'}</small><em class="score">${s.score.toFixed(3)}</em></button>`).join('')}</div>`:'<p class="empty">No matches.</p>';
+  const meta=v.state==='done'?`${v.results.length} best matches across the library · ${v.elapsed}s`:'';
+  root.innerHTML=`<section class="episode search-results"><div class="episode-head"><span class="episode-number">⌕</span><div><h2>“${esc(v.query)}”</h2><p>${meta}</p></div><button class="small-btn" id="clearSearch">Back to episodes</button></div>${body}</section>`;
+  root.scrollTop=0;
+  document.querySelector('#clearSearch').onclick=clearSearch;
+  const build=document.querySelector('#buildIndex'); if(build) build.onclick=startIndex;
+  playList=v.state==='done'?v.results:[];
+  bindCards(root);
+}
+async function runSceneSearch(query){
+  if(!activeLibrary||query.length<2) return;
+  clearInterval(indexPoll);
+  searchView={query,state:'loading',results:[]};renderSearch();
+  const status=await fetch(`/api/scene-search/status?${new URLSearchParams({library:activeLibrary})}`).then(r=>r.json());
+  if(status.job&&['queued','running'].includes(status.job.status)){searchView={...searchView,state:'indexing',job:status.job};renderSearch();pollIndex();return;}
+  if(!status.indexed_count){searchView={...searchView,state:'needs-index',status};renderSearch();return;}
+  const r=await fetch(`/api/scene-search?${new URLSearchParams({library:activeLibrary,q:query})}`);
+  const d=await r.json();
+  if(searchView?.query!==query) return;
+  searchView=r.ok?{query,state:'done',results:d.results,elapsed:d.elapsed}:{query,state:'error',error:d.error||'Search failed'};
+  renderSearch();
+}
+async function startIndex(){
+  const r=await fetch('/api/scene-search/index',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({library:activeLibrary})});
+  searchView={...searchView,state:'indexing',job:await r.json()};renderSearch();pollIndex();
+}
+function pollIndex(){
+  clearInterval(indexPoll);
+  indexPoll=setInterval(async()=>{
+    if(!searchView||searchView.state!=='indexing'){clearInterval(indexPoll);return;}
+    const s=await fetch(`/api/scene-search/status?${new URLSearchParams({library:activeLibrary})}`).then(r=>r.json());
+    if(s.job?.status==='error'){clearInterval(indexPoll);searchView={...searchView,state:'error',error:s.job.message};renderSearch();return;}
+    if(s.job?.status==='done'){clearInterval(indexPoll);runSceneSearch(searchView.query);return;}
+    searchView={...searchView,job:s.job};renderSearch();
+  },2000);
+}
+document.querySelector('#sceneSearch').onsubmit=e=>{e.preventDefault();runSceneSearch(document.querySelector('#sceneQuery').value.trim());};
+document.querySelector('#sceneQuery').onkeydown=e=>{if(e.key==='Escape'&&searchView)clearSearch();};
 showLibraryScreen();loadLibraries();
 let timer;document.querySelector('#similarity').oninput=e=>{document.querySelector('#similarity-value').textContent=e.target.value;clearTimeout(timer);timer=setTimeout(()=>loadCatalog(e.target.value),250)};
 // ---------- Settings ----------

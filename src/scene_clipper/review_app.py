@@ -13,6 +13,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 from .catalog import VIDEO_EXTENSIONS, find_videos, load_catalog, preprocess_directory
 from .describe import clip_describer
 from .exporter import export_selection, ffmpeg_clip_command
+from . import semantic_search
 from .settings import load_settings, public_settings, save_settings, settings_path
 from .subtitles import cues_in_range, search_folder
 
@@ -74,7 +75,8 @@ def audio_tracks(video):
     return tracks
 
 
-def create_app(catalog_root: Path, export_root: Path, exporter=export_selection, describer_factory=clip_describer):
+def create_app(catalog_root: Path, export_root: Path, exporter=export_selection, describer_factory=clip_describer,
+               search_embedder_factory=semantic_search.GemmaSearchEmbedder):
     app = Flask(__name__)
     catalog_root = Path(catalog_root)
     export_root = Path(export_root)
@@ -83,6 +85,28 @@ def create_app(catalog_root: Path, export_root: Path, exporter=export_selection,
     subtitle_cache = catalog_root / ".subtitle-cache"
     preview_cache = catalog_root / ".preview-cache"
     config_path = settings_path(catalog_root)
+    search_state = {"embedder": None, "jobs": {}}
+    model_lock = threading.Lock()
+
+    class LockedEmbedder:
+        """Serialises model calls so a search can interleave with a running index build."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        def embed_scenes(self, *args, **kwargs):
+            with model_lock:
+                return self.inner.embed_scenes(*args, **kwargs)
+
+        def embed_query(self, *args, **kwargs):
+            with model_lock:
+                return self.inner.embed_query(*args, **kwargs)
+
+    def search_embedder():
+        with model_lock:
+            if search_state["embedder"] is None:
+                search_state["embedder"] = LockedEmbedder(search_embedder_factory())
+        return search_state["embedder"]
 
     def settings():
         return load_settings(config_path)
@@ -234,6 +258,60 @@ def create_app(catalog_root: Path, export_root: Path, exporter=export_selection,
         )
         thread.start()
         return jsonify(jobs[job_id])
+
+    def run_search_index(library_id: str, root: Path):
+        job = search_state["jobs"][library_id]
+
+        def progress(number, total, name):
+            job.update(status="running", message=f"Indexing episode {number}/{total}", current=number, total=total)
+
+        try:
+            result = semantic_search.build_index(root, subtitle_cache, search_embedder(), progress=progress)
+            job.update(status="done", message=f"Indexed {result['scenes']} scenes")
+        except Exception as exc:
+            job.update(status="error", message=str(exc))
+
+    @app.get("/api/scene-search/status")
+    def scene_search_status():
+        try:
+            library_id = request.args.get("library")
+            root = library_path(library_id)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify({**semantic_search.index_status(root), "job": search_state["jobs"].get(library_id or "__root__")})
+
+    @app.post("/api/scene-search/index")
+    def scene_search_index():
+        body = request.get_json() or {}
+        library_id = body.get("library") or "__root__"
+        try:
+            root = library_path(library_id)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        current = search_state["jobs"].get(library_id)
+        if current and current["status"] in {"queued", "running"}:
+            return jsonify(current)
+        search_state["jobs"][library_id] = {"status": "queued", "message": "Loading search model…", "created_at": time.time()}
+        threading.Thread(target=run_search_index, args=(library_id, root), daemon=True).start()
+        return jsonify(search_state["jobs"][library_id])
+
+    @app.get("/api/scene-search")
+    def scene_search():
+        query = str(request.args.get("q", "")).strip()
+        if len(query) < 2:
+            return jsonify(error="Enter at least 2 characters"), 400
+        try:
+            root = library_path(request.args.get("library"))
+            limit = max(1, min(200, int(request.args.get("limit", 60))))
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        if semantic_search.index_status(root)["indexed_count"] == 0:
+            return jsonify(error="Build the search index for this library first"), 409
+        started = time.time()
+        hits = semantic_search.search(root, query, search_embedder(), limit)
+        mapping = scene_map()
+        results = [{**mapping[h["id"]], "score": h["score"], "dialogue": h["dialogue"]} for h in hits if h["id"] in mapping]
+        return jsonify(query=query, results=results, elapsed=round(time.time() - started, 3))
 
     @app.get("/thumbnail/<scene_id>")
     def thumbnail(scene_id):

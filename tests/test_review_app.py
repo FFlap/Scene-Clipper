@@ -269,3 +269,16 @@ def test_subtitle_overlay_follows_include_toggle(tmp_path):
     assert "includeSubtitles').onchange" in page
     assert "querySelector('#cueList').hidden" not in page
     assert "querySelector('#tlCues').hidden" not in page
+
+
+def test_index_page_script_parses(tmp_path):
+    """A JS syntax error (e.g. a redeclared const) blanks the whole UI, so parse the inline script."""
+    import re, shutil, pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    html = create_app(tmp_path / "catalog", tmp_path / "exports").test_client().get("/").get_data(as_text=True)
+    script = tmp_path / "page.js"
+    script.write_text("\n".join(re.findall(r"<script>(.*?)</script>", html, re.S)))
+    result = subprocess.run([node, "--check", str(script)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
